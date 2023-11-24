@@ -10,8 +10,8 @@ from lce import LCEClassifier
 import pickle
 import os
 from datetime import datetime
-from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.metrics import precision_recall_fscore_support
+import csv
 
 # Define your main folder where you want to store the results
 main_folder = '/workspace/data/SGU/SFSI/SFSI/XBG10x_akermark_7class/'
@@ -31,7 +31,9 @@ os.makedirs(sub_folder, exist_ok=True)  # Create the subfolder
 print('Created subfolder.')
 
 # Import training data
-akermark = pd.read_csv('/workspace/data/Akermark/concatenated_GENERALTX_7classes.csv', sep= ',', decimal = '.')
+akermark = pd.read_csv('/workspace/data/SGU/SFSI/SFSI/MASTER_TRAIN.csv', sep= ',', decimal = '.')
+akermark = akermark.loc[:, ~akermark.columns.isin(['Unnamed: 0'])]
+
 print('Read input data.')
 # Define the number of iterations
 num_iterations = 100
@@ -48,12 +50,16 @@ best_mcc_score = -1  # Initialize with a value that guarantees replacement
 # Create a variable to store the best model
 best_model = None
 
-target_names = [ 'coarse sed ARG', 'coarse sed Forest', 'fine sed Forest', 'fine sed ARG', 'peat', 'rock', 'till']
-# Create lists to store the individual class F1 scores for each class in each iteration
+target_names = ['coarse sed AGR', 'coarse sed Forest', 'fine sed AGR', 'fine sed Forest', 'peat', 'rock', 'till']
+# Create dictionaries to store lists of the individual class precision, recall, f1 scores, and support for each class in each iteration
+classwise_precision_per_iteration = {class_name: [] for class_name in target_names}
+classwise_recall_per_iteration = {class_name: [] for class_name in target_names}
 classwise_f1_per_iteration = {class_name: [] for class_name in target_names}
+classwise_support_per_iteration = {class_name: [] for class_name in target_names}
 
-# Read random seeds from previous LCE training to guarantee same partition
-with open('/workspace/data/SGU/SFSI/SFSI/LCE10x_akermark_7class/20231113092344/random_seeds.txt', 'r') as file:
+
+# Read random seeds from the text file
+with open('/workspace/data/SGU/SFSI/SFSI/LCE10x_akermark_7class/20231122170432/random_seeds.txt', 'r') as file:
     random_seeds = [int(line.strip()) for line in file]
 
 # Loop for multiple iterations
@@ -68,11 +74,10 @@ for iteration in range(num_iterations):
     x_train = train.loc[:, [c for c in train.columns if c not in ['GENERAL_TX']]]
     le = LabelEncoder()
     y_train = le.fit_transform(train.loc[:, "GENERAL_TX"])
-    weights_y_train = compute_sample_weight('balanced', y_train)
     d_train = xgb.DMatrix(x_train, label=y_train, enable_categorical=True)
     
     # Define the two classes you want to subsample
-    subsample_classes = ['Coarse sediment ARG','Fine sediment ARG']
+    subsample_classes = ['coarse sed AGR','fine sed AGR']
 
     # Define the proportion to keep for the subsample classes
     subsample_proportion = 0.102  # 10.2%
@@ -97,15 +102,14 @@ for iteration in range(num_iterations):
     # Split test into x and y
     x_test = test.loc[:, [c for c in test.columns if c not in ['GENERAL_TX']]]
     y_test = le.fit_transform(test.loc[:, "GENERAL_TX"])
-    weights_y_test = compute_sample_weight('balanced', y_test)
     d_test = xgb.DMatrix(x_test, label=y_test, enable_categorical=True)
     print('Length of test set: ', len(test))
     print('Value Counts based on GENERAL_TX:',test['GENERAL_TX'].value_counts())
     print('Data split and label encoding complete. Model training starts')
 
     # Declare parameters obtained from hyperparameter tuning using bayesian optimization
-    params = {'lambda': 2.457073740496165, 'alpha': 1.0516616777383354, 'booster': 'gbtree', 'max_depth': 12, 'eta': 0.2796918805428652,
-               'gamma': 1.7964583860430594, 'colsample_bytree': 0.806957695474979, 'min_child_weight': 8,'num_class': 7, 'verbosity':1, 'eval_metric':["mlogloss","merror"]}
+    params = {'lambda': 3.6797431147409454, 'alpha': 0.16377015271779502, 'booster': 'gbtree', 'max_depth': 11, 'eta': 0.24755202760689674, 'gamma': 1.1552990227831699, 
+    'colsample_bytree': 0.8356557257338416, 'min_child_weight': 5,'num_class': 7, 'verbosity':1, 'eval_metric':["mlogloss","merror"]}
     # Initialize and fit the model
     xgb_model = xgb.train(params, d_train)
     y_train_pred = xgb_model.predict(d_train)
@@ -114,24 +118,29 @@ for iteration in range(num_iterations):
     print('Model fitting and prediction complete.')
     
     # Calculate evaluation metrics for training and testing
-    train_accuracy = accuracy_score(y_train, y_train_pred, sample_weight=weights_y_train)
-    test_accuracy = accuracy_score(y_test, y_test_pred, sample_weight=weights_y_test)
-    cohen_kappa_train = cohen_kappa_score(y_train, y_train_pred, sample_weight=weights_y_train)
-    cohen_kappa_test = cohen_kappa_score(y_test, y_test_pred, sample_weight=weights_y_test)
-    f1_train_w = f1_score(y_train, y_train_pred, average='weighted', sample_weight=weights_y_train)
-    f1_test_w = f1_score(y_test, y_test_pred, average='weighted', sample_weight=weights_y_test)
+    train_accuracy = accuracy_score(y_train, y_train_pred)
+    test_accuracy = accuracy_score(y_test, y_test_pred)
+    cohen_kappa_train = cohen_kappa_score(y_train, y_train_pred)
+    cohen_kappa_test = cohen_kappa_score(y_test, y_test_pred)
+    f1_train_w = f1_score(y_train, y_train_pred, average='weighted')
+    f1_test_w = f1_score(y_test, y_test_pred, average='weighted')
     f1_train_uw = f1_score(y_train, y_train_pred, average=None)
     f1_test_uw = f1_score(y_test, y_test_pred, average=None)
-    mcc_train = matthews_corrcoef(y_train, y_train_pred, sample_weight=weights_y_train)
-    mcc_test = matthews_corrcoef(y_test, y_test_pred, sample_weight=weights_y_test)
+    mcc_train = matthews_corrcoef(y_train, y_train_pred)
+    mcc_test = matthews_corrcoef(y_test, y_test_pred)
     #precision_recall_fscore_support_train = precision_recall_fscore_support(y_train, y_train_pred, average = None)
-    precision_recall_fscore_support_test = precision_recall_fscore_support(y_test, y_test_pred, average = None)
+    #precision_recall_fscore_support_test = precision_recall_fscore_support(y_test, y_test_pred, average = None)
     classification_report_test = classification_report(y_test, y_test_pred, target_names=target_names, digits=3, output_dict=True)
 
-    # Extract the F1 scores for each class and append to the respective list
-    for class_name in target_names:
-        f1_score_class = classification_report_test[class_name]['f1-score']
-        classwise_f1_per_iteration[class_name].append(f1_score_class)
+    precision_test, recall_test, f1_score_test, support_test = precision_recall_fscore_support(y_test, y_test_pred, average=None)
+
+
+    # Assuming target_names is a list of class names
+    for i, class_name in enumerate(target_names):
+        classwise_precision_per_iteration[class_name].append(precision_test[i])
+        classwise_recall_per_iteration[class_name].append(recall_test[i])
+        classwise_f1_per_iteration[class_name].append(f1_score_test[i])
+        classwise_support_per_iteration[class_name].append(support_test[i])
 
     # Create dataframes for this iteration's results
     iteration_results_train = pd.DataFrame({
@@ -217,22 +226,36 @@ box_plot_path = os.path.join(sub_folder, 'XGB10x_metrics_box_plots.png')
 plt.savefig(box_plot_path)
 print('Boxplot saved.')
 
-# Create box plots for unweighted F1 scores
+## Create DataFrames from dictionaries
+df_f1 = pd.DataFrame(classwise_f1_per_iteration)
+df_precision = pd.DataFrame(classwise_precision_per_iteration)
+df_recall = pd.DataFrame(classwise_recall_per_iteration)
+df_support = pd.DataFrame(classwise_support_per_iteration)
 
-plt.figure(figsize=(12, 6))
+# Specify file paths for saving CSV files
+csv_f1_path = os.path.join(sub_folder,'classwise_f1_scores.csv')
+csv_precision_path = os.path.join(sub_folder,'classwise_precision_scores.csv')
+csv_recall_path = os.path.join(sub_folder,'classwise_recall_scores.csv')
+csv_support_path = os.path.join(sub_folder,'classwise_support_values.csv')
 
-# Extract unweighted F1 scores for each class
-unweighted_f1_scores_by_class = [classwise_f1_per_iteration[class_name] for class_name in target_names]
+# Save DataFrames to CSV files
+df_f1.to_csv(csv_f1_path, index=False)
+df_precision.to_csv(csv_precision_path, index=False)
+df_recall.to_csv(csv_recall_path, index=False)
+df_support.to_csv(csv_support_path, index=False)
 
-# Plot box plots for each class
-plt.boxplot(unweighted_f1_scores_by_class, labels=target_names)
-plt.title('Unweighted F1 Scores by Class (test)')
-plt.xlabel('Class')
+print(f"Results saved to {csv_f1_path}, {csv_precision_path}, {csv_recall_path}, and {csv_support_path}.")
+
+# Plot box plots for class-wise F1 scores
+plt.figure(figsize=(10, 6))
+df_f1.boxplot(rot=45, sym='k+', grid=False)
+plt.title('Class-wise F1 Scores Box Plot')
 plt.ylabel('F1 Score')
-
+plt.xlabel('Class Name')
 plt.tight_layout()
+plt.show()
 
-# Save the plot as an image
-unweighted_f1_score_box_plot_path = os.path.join(sub_folder, 'unweighted_f1_score_box_plot.png')
-plt.savefig(unweighted_f1_score_box_plot_path)
-print('Box plot for unweighted F1 scores by class saved.')
+# Save the figure to a PNG file
+box_plot_path = os.path.join(sub_folder, 'unweighted_f1_score_box_plot.png')
+plt.savefig(box_plot_path)
+print('Classwise f1 score box plot saved')
